@@ -52,6 +52,39 @@
     line-height: 1.55;
   }
 
+  /* ---------- profile gate ---------- */
+  #profileGate {
+    position: fixed; inset: 0; background: var(--bg); z-index: 200;
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  #profileGate.show { display: flex; }
+  .profile-card {
+    width: 100%; max-width: 380px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 20px; padding: 24px;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .profile-card h2 {
+    font-family: 'Quicksand', sans-serif; font-weight: 700; font-size: 19px; margin: 0;
+  }
+  .profile-card p { font-size: 12.5px; color: var(--muted); margin: 0; line-height: 1.5; }
+  .profile-list { display: flex; flex-direction: column; gap: 8px; }
+  .profile-option {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    border: 1.5px solid var(--line); border-radius: 14px; padding: 10px 12px;
+    background: #fff; cursor: pointer; font-size: 13.5px; font-weight: 600;
+  }
+  .profile-option:hover { background: var(--panel-2); }
+  .profile-option .del-profile { font-size: 11px; color: var(--muted); font-weight: 500; cursor: pointer; }
+  .profile-option .del-profile:hover { color: #a2454b; }
+  .profile-new { display: flex; gap: 8px; }
+  .profile-new input {
+    flex: 1; padding: 10px 12px; border-radius: 14px; border: 1.5px solid var(--line);
+    font-family: 'Inter', sans-serif; font-size: 13.5px; outline: none;
+  }
+  .profile-new input:focus { border-color: var(--select); }
+  .profile-new button { border-color: var(--select); background: var(--select-bg); white-space: nowrap; }
+  .profile-divider { font-size: 11px; color: var(--muted); text-align: center; }
+
   .weekbar {
     display: flex;
     align-items: center;
@@ -242,6 +275,20 @@
 </head>
 <body>
 
+  <!-- ---------- PROFILE GATE (localStorage-based local login) ---------- -->
+  <div id="profileGate">
+    <div class="profile-card">
+      <h2 id="profileTitle">¿Quién eres?</h2>
+      <p>Elige tu perfil o crea uno nuevo. No hace falta contraseña: es solo para que cada persona tenga su propio calendario guardado en este navegador.</p>
+      <div class="profile-list" id="profileList"></div>
+      <div class="profile-divider" id="profileDivider" style="display:none;">o</div>
+      <div class="profile-new">
+        <input type="text" id="newProfileInput" placeholder="Nombre nuevo, ej: Marta" maxlength="30">
+        <button class="primary" id="newProfileBtn">Entrar</button>
+      </div>
+    </div>
+  </div>
+
   <h1>Planificador semanal</h1>
   <p class="subtitle">Toca un pendiente y luego el hueco donde quieras colocarlo (o arrastralo si usas raton). Repite la misma actividad las veces que quieras y combina varias en el mismo hueco. Marca cada dia como completo cuando acabes, navega entre semanas, copia la anterior como plantilla, y exporta la semana en cualquier momento.</p>
 
@@ -258,6 +305,7 @@
       <button id="historyBtn">Historial</button>
       <button id="exportBtn">Exportar</button>
       <button id="resetBtn">Vaciar</button>
+      <button id="switchUserBtn">Cambiar de usuario</button>
       <button class="primary" id="closeWeekBtn">Cerrar y pasar pagina</button>
     </div>
   </div>
@@ -335,7 +383,179 @@
   var weekStart = null;
   var selection = null; // { type: "backlog", itemId, name } | { type: "slot", instanceId, itemId, day, period, name }
 
-  var hasStorage = (typeof window !== "undefined") && window.storage && typeof window.storage.get === "function";
+  // ============================================================
+  //  PERFIL LOCAL (localStorage) - reemplaza a window.storage
+  // ============================================================
+  // Claves globales (no dependen de usuario):
+  //   "planner:profiles"        -> array de nombres de perfil
+  //   "planner:activeProfile"   -> nombre del perfil activo
+  // Claves por usuario (prefijadas con el perfil activo):
+  //   "planner:{usuario}:week:<lunes-ISO>"
+  //   "planner:{usuario}:custom-items"
+  //   "planner:{usuario}:last-week-pointer"
+
+  var PROFILES_KEY = "planner:profiles";
+  var ACTIVE_PROFILE_KEY = "planner:activeProfile";
+  var activeProfile = null;
+
+  var hasStorage = (typeof window !== "undefined") && !!window.localStorage;
+
+  function userKey(key) {
+    return "planner:" + activeProfile + ":" + key;
+  }
+
+  function getProfiles() {
+    if (!hasStorage) return [];
+    try {
+      var raw = window.localStorage.getItem(PROFILES_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) { return []; }
+  }
+  function saveProfiles(list) {
+    if (!hasStorage) return;
+    try { window.localStorage.setItem(PROFILES_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function getActiveProfileFromStorage() {
+    if (!hasStorage) return null;
+    try { return window.localStorage.getItem(ACTIVE_PROFILE_KEY); } catch (e) { return null; }
+  }
+  function setActiveProfileInStorage(name) {
+    if (!hasStorage) return;
+    try { window.localStorage.setItem(ACTIVE_PROFILE_KEY, name); } catch (e) {}
+  }
+  function clearActiveProfileInStorage() {
+    if (!hasStorage) return;
+    try { window.localStorage.removeItem(ACTIVE_PROFILE_KEY); } catch (e) {}
+  }
+
+  // storageGet/Set/List ahora operan sobre localStorage, con la clave ya
+  // namespaced por usuario activo (userKey). Misma firma que antes para no
+  // tener que tocar el resto de la app.
+  var storageErrorShown = false;
+  function warnStorageFailure() {
+    if (storageErrorShown) return;
+    storageErrorShown = true;
+    var note = document.getElementById("storageNote");
+    if (note) note.textContent = "No se ha podido guardar (almacenamiento lleno o bloqueado). Los cambios podrian perderse.";
+  }
+
+  async function storageGet(key) {
+    if (!hasStorage) return null;
+    try {
+      var raw = window.localStorage.getItem(userKey(key));
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  async function storageSet(key, value) {
+    if (!hasStorage) return;
+    try {
+      window.localStorage.setItem(userKey(key), JSON.stringify(value));
+    } catch (e) { warnStorageFailure(); }
+  }
+  async function storageList(prefix) {
+    if (!hasStorage) return [];
+    try {
+      var fullPrefix = userKey(prefix);
+      var out = [];
+      for (var i = 0; i < window.localStorage.length; i++) {
+        var k = window.localStorage.key(i);
+        if (k && k.indexOf(fullPrefix) === 0) {
+          out.push(k.slice(("planner:" + activeProfile + ":").length));
+        }
+      }
+      return out;
+    } catch (e) { return []; }
+  }
+
+  // ---------- profile gate UI ----------
+  function renderProfileGate() {
+    var profiles = getProfiles();
+    var list = document.getElementById("profileList");
+    var divider = document.getElementById("profileDivider");
+    var title = document.getElementById("profileTitle");
+    list.innerHTML = "";
+
+    if (!hasStorage) {
+      title.textContent = "Almacenamiento no disponible";
+      list.innerHTML = '<p style="font-size:12.5px;color:var(--muted);margin:0;">Este navegador no permite guardar datos localmente. Puedes seguir usando la app, pero nada se guardara.</p>';
+      divider.style.display = "none";
+      activeProfile = "invitado";
+      hideProfileGate();
+      return;
+    }
+
+    if (profiles.length === 0) {
+      divider.style.display = "none";
+    } else {
+      divider.style.display = "block";
+      profiles.forEach(function (name) {
+        var opt = document.createElement("div");
+        opt.className = "profile-option";
+        var span = document.createElement("span");
+        span.textContent = name;
+        opt.appendChild(span);
+        var del = document.createElement("span");
+        del.className = "del-profile";
+        del.textContent = "eliminar";
+        del.title = "Eliminar este perfil y todos sus datos guardados";
+        del.addEventListener("click", function (e) {
+          e.stopPropagation();
+          if (!confirm('Eliminar el perfil "' + name + '" y borrar todos sus datos guardados en este navegador? Esto no se puede deshacer.')) return;
+          deleteProfileData(name);
+          var updated = getProfiles().filter(function (p) { return p !== name; });
+          saveProfiles(updated);
+          renderProfileGate();
+        });
+        opt.appendChild(del);
+        opt.addEventListener("click", function () { chooseProfile(name); });
+        list.appendChild(opt);
+      });
+    }
+    document.getElementById("newProfileInput").value = "";
+    showProfileGate();
+  }
+
+  function deleteProfileData(name) {
+    if (!hasStorage) return;
+    var prefix = "planner:" + name + ":";
+    var toRemove = [];
+    for (var i = 0; i < window.localStorage.length; i++) {
+      var k = window.localStorage.key(i);
+      if (k && k.indexOf(prefix) === 0) toRemove.push(k);
+    }
+    toRemove.forEach(function (k) { window.localStorage.removeItem(k); });
+  }
+
+  function showProfileGate() { document.getElementById("profileGate").classList.add("show"); }
+  function hideProfileGate() { document.getElementById("profileGate").classList.remove("show"); }
+
+  async function chooseProfile(name) {
+    activeProfile = name;
+    setActiveProfileInStorage(name);
+    var profiles = getProfiles();
+    if (profiles.indexOf(name) === -1) {
+      profiles.push(name);
+      saveProfiles(profiles);
+    }
+    hideProfileGate();
+    storageErrorShown = false;
+    await bootForActiveProfile();
+  }
+
+  document.getElementById("newProfileBtn").addEventListener("click", function () {
+    var val = document.getElementById("newProfileInput").value.trim();
+    if (!val) return;
+    chooseProfile(val);
+  });
+  document.getElementById("newProfileInput").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") document.getElementById("newProfileBtn").click();
+  });
+
+  document.getElementById("switchUserBtn").addEventListener("click", function () {
+    clearActiveProfileInStorage();
+    activeProfile = null;
+    renderProfileGate();
+  });
 
   function itemMap() {
     var m = {};
@@ -390,25 +610,6 @@
     return sch;
   }
 
-  async function storageGet(key) {
-    if (!hasStorage) return null;
-    try {
-      var r = await window.storage.get(key, false);
-      return r ? JSON.parse(r.value) : null;
-    } catch (e) { return null; }
-  }
-  async function storageSet(key, value) {
-    if (!hasStorage) return;
-    try { await window.storage.set(key, JSON.stringify(value), false); } catch (e) {}
-  }
-  async function storageList(prefix) {
-    if (!hasStorage) return [];
-    try {
-      var r = await window.storage.list(prefix, false);
-      return r ? r.keys : [];
-    } catch (e) { return []; }
-  }
-
   async function saveCurrentWeek() {
     await storageSet("week:" + weekStart, { weekStart: weekStart, schedule: schedule });
     await storageSet("last-week-pointer", weekStart);
@@ -418,6 +619,10 @@
   }
 
   async function loadWeek(iso) {
+    // Guardamos cualquier cambio pendiente de la semana actual antes de
+    // navegar, para no perder ediciones si hay varias pestañas abiertas
+    // en semanas distintas del mismo usuario.
+    if (weekStart) await saveCurrentWeek();
     clearSelectionSilent();
     weekStart = iso;
     var saved = await storageGet("week:" + iso);
@@ -539,7 +744,7 @@
     var end = addDays(weekStart, 6);
     document.getElementById("weekRange").textContent = "Semana del " + fmtShort(start) + " al " + fmtLong(end);
     document.getElementById("storageNote").textContent = hasStorage
-      ? "Tus cambios se guardan automaticamente."
+      ? "Guardando como: " + activeProfile
       : "El almacenamiento no esta disponible aqui: los cambios no se guardaran al cerrar.";
   }
 
@@ -909,24 +1114,59 @@
     if (e.target.id === "exportModal") e.currentTarget.classList.remove("show");
   });
 
+  // ---------- cross-tab sync ----------
+  // Si el mismo usuario tiene dos pestañas abiertas (p.ej. una en la semana
+  // actual y otra en la siguiente), y edita en una, esta escucha detecta el
+  // cambio en localStorage y refresca la otra pestaña si esta mostrando el
+  // mismo usuario y la misma semana afectada.
+  window.addEventListener("storage", function (e) {
+    if (!activeProfile || !e.key) return;
+    var prefix = "planner:" + activeProfile + ":";
+    if (e.key.indexOf(prefix) !== 0) return;
+
+    var localKey = e.key.slice(prefix.length);
+
+    if (localKey === "week:" + weekStart) {
+      // Otra pestaña modifico justo la semana que estamos viendo: recargarla
+      // sin volver a escribir (para no pisar lo que la otra pestaña acaba de guardar).
+      try {
+        var updated = e.newValue ? JSON.parse(e.newValue) : null;
+        schedule = updated && updated.schedule ? normalizeSchedule(updated.schedule) : emptySchedule();
+        clearSelectionSilent();
+        render();
+      } catch (err) {}
+    } else if (localKey === "custom-items") {
+      try {
+        customItems = e.newValue ? JSON.parse(e.newValue) : [];
+        buildBench();
+      } catch (err) {}
+    }
+  });
+
   // ---------- boot ----------
-  (async function init() {
+  async function bootForActiveProfile() {
     var savedCustom = await storageGet("custom-items");
     customItems = savedCustom || [];
 
     var pointer = await storageGet("last-week-pointer");
-    if (!pointer) {
-      var legacy = await storageGet("current-week");
-      if (legacy && legacy.weekStart && legacy.schedule) {
-        weekStart = legacy.weekStart;
-        schedule = normalizeSchedule(legacy.schedule);
-        await saveCurrentWeek();
-        pointer = weekStart;
-      }
-    }
-
     await loadWeek(pointer || getMondayISO(new Date()));
     buildBench();
+  }
+
+  (function init() {
+    if (!hasStorage) {
+      renderProfileGate();
+      return;
+    }
+    var existing = getActiveProfileFromStorage();
+    if (existing) {
+      activeProfile = existing;
+      var profiles = getProfiles();
+      if (profiles.indexOf(existing) === -1) { profiles.push(existing); saveProfiles(profiles); }
+      bootForActiveProfile();
+    } else {
+      renderProfileGate();
+    }
   })();
 </script>
 </body>
